@@ -1,0 +1,190 @@
+const {register,approve} = require ("../services/registerVolunteerService");
+const {checkIfPresent,insertImage} = require ("../services/registerVolunteerService");
+const path = require('path');
+//process.env['NODE_TLS_REJECT_UNAUTHORIZED'] = 0;
+var jwt = require('jsonwebtoken');
+const { S3Client } = require("@aws-sdk/client-s3");
+const { Readable } = require('stream');
+const { PutObjectCommand } = require("@aws-sdk/client-s3");
+const { Upload } = require('@aws-sdk/lib-storage');
+const nodemailer = require('nodemailer');
+const fs = require('fs')
+const region = process.env.REGION;
+const accessKeyId = process.env.ACCESSKEYID;
+const secretAccessKey = process.env.SECRETACCESSKEY;
+const s3Client = new S3Client({
+    region,
+    credentials: {
+      accessKeyId,
+      secretAccessKey,
+    },
+  });
+  
+const multer = require('multer')
+var imageStorage = multer.diskStorage({
+    destination: "C:\\Users\\Lenovo\\Desktop\\Advances in Computer Science\\HealthMidtermProject\\client\\myapp\\src\\Assets\\UserImages",
+    filename: (req, file, cb) => {
+        cb(null, file.fieldname + '_' + Date.now() + path.extname(file.originalname))
+    }
+    
+});
+
+const imageUpload = multer({
+    storage: imageStorage,
+    limits: {
+        fileSize: 10000000 
+    },
+   fileFilter(req, file, cb) {
+    if (!file.originalname.match(/\.(png|jpg|jpeg|pdf|doc|docx)$/)) {
+        return cb(new Error('Please upload a valid file'), false);
+    }
+    
+    cb(null, true);
+}
+
+})
+
+
+const transporter = nodemailer.createTransport({
+            host: 'pro.turbo-smtp.com',
+            port: 25025,
+          
+            secure: true,
+            auth: {
+                user: 'elie.shakkour@std.balamand.edu.lb',
+                pass: process.env.EMAIL_PASS,
+            },
+            socketTimeout: 300000
+        });
+
+
+  
+const volunteerRegisterController = async(req,res)=>{
+
+    const {volunteerData} = req.body;
+    if(!volunteerData){
+        return res.status(401).json({message: "missing data"});
+    }
+    const result = await register(volunteerData);
+   
+    if(result.status === 200){ 
+        return res.status(200).json({message: result.message})
+    }
+
+}
+
+const checkVolunteer= async(req,res)=>{
+    const{volunteerData} = req.body;
+    const result = await checkIfPresent(volunteerData);
+
+        return res.status(200).json({message: result.message})
+    
+}
+const imageUploader = async(req, res)=> {
+
+    const timestamp = Date.now(); 
+    const key = req.body.email + '_' + timestamp; 
+    const fileStream = fs.createReadStream(req.file ? req.file.path : "C:\\Users\\Lenovo\\Desktop\\Advances in Computer Science\\HealthMidtermProject\\api\\assets\\images\\anon.jpg");
+
+    const upload = new Upload({
+        client: s3Client,
+        params: {
+            Bucket: "volunteersprofilepics",
+            Key: key,
+            Body: fileStream,
+        },
+    });
+    await upload.done();
+    const result = await insertImage(key, req.body.email);
+
+   return  res.status(200).json({ message: "Image uploaded successfully", user: result.user });
+ 
+};
+const cvUploader = async (req, res) => {
+    const img = req.file.path;
+    const timestamp = Date.now();
+    const key = req.body.email + '_' + timestamp;
+    const fileStream = fs.createReadStream(req.file.path);
+   
+    const upload = new Upload({
+        client: s3Client,
+        params: {
+            Bucket: "patchcarecvrepository",
+            Key: key,
+            Body: fileStream,
+        },
+    });
+
+    try {
+        await upload.done(); 
+        
+        const approvalLink = `http://localhost:3001/api/approve-volunteer?email=${req.body.email}`;
+        const mailOptions = {
+            from: 'elie.shakkour@std.balamand.edu.lb',
+            to: 'elie.shakkour@std.balamand.edu.lb',
+            subject: 'Volunteer wants to join!',
+            html: `<h1>A new volunteer wants to join the team! Please find the attached CV.</h1><p><a href="${approvalLink}">Approve Volunteer</a></p>`,
+            attachments: [
+                {
+                    filename: key, 
+                    path: img,
+                }
+            ]
+        };
+
+        transporter.sendMail(mailOptions, (error, info) => {
+            if (error) {
+                console.log('Error occurred:', error.message);
+                return res.status(500).json({ message: "Error sending email" });
+            }
+            console.log('Message sent successfully!', info.messageId);
+        });
+
+        return res.status(200).json({ message: "CV uploaded and email sent" });
+    } catch (error) {
+        console.error("Error uploading CV:", error);
+        return res.status(500).json({ message: "CV upload failed" });
+    }
+};
+
+const approveUser = async (req, res) => {
+    try {
+        const { email } = req.query;
+        const result = await approve(email);
+
+        if (result.status === 200) {
+            const approvalLink = `http://localhost:3000`;
+            const mailOptions = {
+                from: 'elie.shakkour@std.balamand.edu.lb',
+                to: email,
+                subject: 'You are approved!',
+                html: `<h1>Sign in as a volunteer.</h1><p><a href="${approvalLink}">Sign in</a></p>`,
+            };
+
+            transporter.sendMail(mailOptions, (error, info) => {
+                if (error) {
+                    console.log('Error occurred:', error.message);
+                    return res.status(500).json({ message: "Error sending email" });
+                }
+                console.log('Message sent successfully!', info.messageId);
+                return res.status(200).json({ message: result.message });
+            });
+        }
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+
+
+module.exports={
+    volunteerRegisterController,
+    checkVolunteer,
+    imageUploader,
+    cvUploader,
+    approveUser,
+    
+}
+
+module.exports.imageUpload = imageUpload;
